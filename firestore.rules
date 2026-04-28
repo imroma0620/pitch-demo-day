@@ -1,0 +1,61 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Phase 3: Primitive Definition
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Validation Blueprint for Project
+    function isValidProject(data) {
+      return data.keys().hasAll(['name', 'studentId', 'ownerId', 'stages', 'createdAt', 'updatedAt'])
+        && data.name is string && data.name.size() <= 200
+        && data.studentId is string && data.studentId.size() <= 50
+        && data.ownerId == request.auth.uid
+        && data.stages is list && data.stages.size() >= 1 && data.stages.size() <= 10
+        && data.createdAt == request.time
+        && data.updatedAt == request.time;
+    }
+
+    match /projects/{projectId} {
+      allow get: if isSignedIn() && isOwner(existing().ownerId);
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      
+      allow create: if isSignedIn() 
+        && isValidId(projectId)
+        && isValidProject(incoming());
+
+      allow update: if isSignedIn()
+        && isOwner(existing().ownerId)
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'studentId', 'stages', 'updatedAt'])
+        );
+
+      allow delete: if isSignedIn() && isOwner(existing().ownerId);
+    }
+  }
+}

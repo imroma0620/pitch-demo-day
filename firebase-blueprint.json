@@ -1,0 +1,37 @@
+{
+  "entities": {
+    "Project": {
+      "title": "Pitch Project",
+      "description": "Represents a pitch preparation project with specific timing stages.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "studentId": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "stages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "label": { "type": "string" },
+              "title": { "type": "string" },
+              "desc": { "type": "string" },
+              "duration": { "type": "integer" }
+            }
+          }
+        }
+      },
+      "required": ["name", "studentId", "ownerId", "stages"]
+    }
+  },
+  "firestore": {
+    "/projects/{projectId}": {
+      "schema": "Project",
+      "description": "Collection of pitch projects."
+    }
+  }
+}

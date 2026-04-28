@@ -1,0 +1,27 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  
+  --color-brand-green: #1A8C4E;
+  --color-brand-black: #0A0A0A;
+}
+
+@layer base {
+  body {
+    @apply bg-brand-black text-white font-mono selection:bg-white selection:text-black;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply px-8 py-3 bg-white text-black font-bold uppercase transition-all hover:bg-zinc-200 active:scale-95;
+  }
+  .btn-outline {
+    @apply px-8 py-3 border-2 border-white text-white font-bold uppercase transition-all hover:bg-white hover:text-black active:scale-95;
+  }
+  .btn-action {
+    @apply px-8 py-3 bg-brand-green text-white font-bold uppercase transition-all hover:opacity-90 active:scale-95;
+  }
+}
