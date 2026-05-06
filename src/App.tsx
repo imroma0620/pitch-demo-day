@@ -71,6 +71,8 @@ export default function App() {
   const [view, setView] = useState<'LIST' | 'TIMER'>('LIST');
   const [authError, setAuthError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const presentationRootRef = useRef<HTMLDivElement>(null);
+  const [isPresenting, setIsPresenting] = useState(false);
   
   // Timer State
   const [timeLeft, setTimeLeft] = useState(0);
@@ -78,6 +80,9 @@ export default function App() {
   const [activeTab, setActiveTab ] = useState('TIMER');
   const [wpm, setWpm] = useState(142);
   const timerRef = useRef<HTMLDivElement>(null);
+  const endAtMsRef = useRef<number | null>(null);
+  const lastAnnouncedSecondRef = useRef<number | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
 
   const canUseApp = Boolean(user) || isGuest;
 
@@ -219,19 +224,37 @@ export default function App() {
   const hasNextStage = Boolean(selectedProject && activeStageIndex < selectedProject.stages.length - 1 && timeLeft > 0);
 
   // Sound Synth Logic
-  const playBeep = useCallback((frequency: number, type: 'sine' | 'square' | 'sawtooth' | 'triangle' = 'sine', duration = 0.1) => {
+  const ensureAudioContext = useCallback(async () => {
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextClass) return null;
+    if (!audioCtxRef.current) audioCtxRef.current = new AudioContextClass();
+    const ctx = audioCtxRef.current;
+    if (ctx.state === 'suspended') {
+      try {
+        await ctx.resume();
+      } catch {
+        // ignore
+      }
+    }
+    return ctx;
+  }, []);
+
+  const playBeep = useCallback(async (
+    frequency: number,
+    type: 'sine' | 'square' | 'sawtooth' | 'triangle' = 'sine',
+    duration = 0.1,
+    volume = 0.12
+  ) => {
     try {
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      if (!AudioContextClass) return;
-      
-      const ctx = new AudioContextClass();
+      const ctx = await ensureAudioContext();
+      if (!ctx) return;
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       
       osc.type = type;
       osc.frequency.setValueAtTime(frequency, ctx.currentTime);
       
-      gain.gain.setValueAtTime(0.1, ctx.currentTime);
+      gain.gain.setValueAtTime(Math.max(0.001, volume), ctx.currentTime);
       gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
       
       osc.connect(gain);
@@ -242,43 +265,76 @@ export default function App() {
     } catch (e) {
       console.error("Audio error:", e);
     }
-  }, []);
+  }, [ensureAudioContext]);
 
   useEffect(() => {
     if (activeStageIndex !== prevStageIndex.current) {
-      if (isRunning) playBeep(660, 'sine', 0.15); // Transition beep
+      if (isRunning) playBeep(660, 'sine', 0.15, 0.18); // Transition beep
       prevStageIndex.current = activeStageIndex;
     }
   }, [activeStageIndex, isRunning, playBeep]);
 
   useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (isRunning && timeLeft > 0) {
-      interval = setInterval(() => {
-        setTimeLeft((prev) => {
-          const next = prev - 1;
-          
-          // Sound trigger logic
-          if (next > 5) {
-            // Standard clock tick every second
-            playBeep(1200, 'sine', 0.02); 
-          } else if (next <= 5 && next > 0) {
-            // High beep for final countdown
-            playBeep(1800, 'sine', 0.05);
-          } else if (next === 0) {
-            // Final terminal buzz
-            playBeep(440, 'square', 0.5);
+    const computeRemainingSeconds = () => {
+      const endAt = endAtMsRef.current;
+      if (!endAt) return timeLeft;
+      return Math.max(0, Math.ceil((endAt - Date.now()) / 1000));
+    };
+
+    const tick = () => {
+      const remaining = computeRemainingSeconds();
+      setTimeLeft(remaining);
+
+      // Fire beeps on second boundaries even if browser throttles timers.
+      if (lastAnnouncedSecondRef.current !== remaining) {
+        if (isRunning && remaining > 0) {
+          if (remaining <= 10) {
+            // Last 10 seconds: louder + more noticeable
+            playBeep(1900, 'square', 0.08, 0.45);
+          } else {
+            // Normal tick
+            playBeep(1200, 'sine', 0.02, 0.14);
           }
-          
-          return Math.max(0, next);
-        });
-        setWpm(prev => prev + (Math.random() > 0.5 ? 1 : -1));
-      }, 1000);
-    } else if (timeLeft === 0) {
-      setIsRunning(false);
+        }
+
+        if (isRunning && remaining === 0) {
+          // Final beep
+          playBeep(440, 'square', 0.6, 0.85);
+        }
+
+        lastAnnouncedSecondRef.current = remaining;
+      }
+
+      setWpm(prev => prev + (Math.random() > 0.5 ? 1 : -1));
+      if (remaining === 0) setIsRunning(false);
+    };
+
+    if (isRunning && timeLeft > 0) {
+      // high-frequency timer so countdown stays accurate; remaining is computed from Date.now()
+      const interval = window.setInterval(tick, 250);
+      tick();
+      return () => window.clearInterval(interval);
     }
-    return () => clearInterval(interval);
+    return;
   }, [isRunning, timeLeft, playBeep]);
+
+  useEffect(() => {
+    const onVisibility = () => {
+      // force a re-sync when user changes tabs / screens
+      if (!isRunning) return;
+      const endAt = endAtMsRef.current;
+      if (!endAt) return;
+      const remaining = Math.max(0, Math.ceil((endAt - Date.now()) / 1000));
+      setTimeLeft(remaining);
+      lastAnnouncedSecondRef.current = remaining;
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('focus', onVisibility);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('focus', onVisibility);
+    };
+  }, [isRunning]);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -289,7 +345,67 @@ export default function App() {
   const handleReset = () => {
     setIsRunning(false);
     setTimeLeft(totalSeconds);
+    endAtMsRef.current = null;
+    lastAnnouncedSecondRef.current = null;
   };
+
+  const startTimer = useCallback(async () => {
+    if (timeLeft <= 0) return;
+    await ensureAudioContext();
+    endAtMsRef.current = Date.now() + timeLeft * 1000;
+    lastAnnouncedSecondRef.current = timeLeft;
+    setIsRunning(true);
+  }, [ensureAudioContext, timeLeft]);
+
+  const pauseTimer = useCallback(() => {
+    const endAt = endAtMsRef.current;
+    if (endAt) {
+      const remaining = Math.max(0, Math.ceil((endAt - Date.now()) / 1000));
+      setTimeLeft(remaining);
+    }
+    endAtMsRef.current = null;
+    setIsRunning(false);
+  }, []);
+
+  const toggleTimer = useCallback(async () => {
+    if (isRunning) {
+      pauseTimer();
+    } else {
+      await startTimer();
+    }
+  }, [isRunning, pauseTimer, startTimer]);
+
+  const enterPresentation = useCallback(async () => {
+    setIsPresenting(true);
+    const el = presentationRootRef.current;
+    if (el?.requestFullscreen) {
+      try {
+        await el.requestFullscreen();
+      } catch {
+        // ignore fullscreen errors (permissions, etc.)
+      }
+    }
+    await startTimer();
+  }, [startTimer]);
+
+  const exitPresentation = useCallback(async () => {
+    setIsPresenting(false);
+    if (document.fullscreenElement && document.exitFullscreen) {
+      try {
+        await document.exitFullscreen();
+      } catch {
+        // ignore
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const onFsChange = () => {
+      if (!document.fullscreenElement) setIsPresenting(false);
+    };
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  }, []);
 
   const handleNext = () => {
     if (!selectedProject) return;
@@ -487,6 +603,7 @@ export default function App() {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               className="flex-1 flex flex-col relative bg-black"
+              ref={presentationRootRef}
             >
               {/* Central Presentation Area */}
               <div className="flex-1 relative flex items-center justify-center p-8 lg:p-16">
@@ -558,6 +675,23 @@ export default function App() {
                   <button onClick={() => setView('LIST')} className="flex items-center gap-1 text-[10px] font-bold bg-brand-black/80 backdrop-blur-md border border-white/10 px-3 py-2 hover:border-white transition-all">
                     <ChevronLeft size={14} /> LISTA
                   </button>
+                  <div className="flex items-center gap-2">
+                    {!isPresenting ? (
+                      <button
+                        onClick={enterPresentation}
+                        className="flex items-center gap-2 text-[10px] font-bold bg-brand-green text-white px-3 py-2 border border-white/10 hover:opacity-90 transition-all"
+                      >
+                        <Presentation size={14} /> PRESENTAR
+                      </button>
+                    ) : (
+                      <button
+                        onClick={exitPresentation}
+                        className="flex items-center gap-2 text-[10px] font-bold bg-white text-black px-3 py-2 border border-white/10 hover:bg-zinc-200 transition-all"
+                      >
+                        <Presentation size={14} /> SALIR
+                      </button>
+                    )}
+                  </div>
                   <div className="p-4 bg-brand-black/80 backdrop-blur-md border border-white/10 shadow-xl min-w-[200px]">
                     <div className="text-[8px] font-bold text-brand-green tracking-[0.4em] uppercase mb-1">STATION_ACTIVE</div>
                     <h2 className="text-2xl font-black tracking-tighter uppercase">{activeStage?.title}</h2>
@@ -604,7 +738,7 @@ export default function App() {
                       <RotateCcw size={20} />
                     </button>
                     <button 
-                      onClick={() => setIsRunning(!isRunning)} 
+                      onClick={toggleTimer}
                       className={`w-32 h-12 flex items-center justify-center gap-3 font-black text-xs tracking-widest transition-all
                         ${isRunning ? "bg-red-500 text-white" : "bg-white text-black hover:bg-brand-green"}`}
                     >
